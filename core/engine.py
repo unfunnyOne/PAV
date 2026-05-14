@@ -1,9 +1,11 @@
 import yara
 from pathlib import Path
+from typing import Generator
+
 
 rules = None
 
-# Returning just a true/false seems lazy and hard to expand in the future, so I'm going to use a class to return scan results
+
 class ScanResult:
     def __init__(self, filepath: Path, infected: bool, matches: list[str]):
         self.filepath = filepath
@@ -11,8 +13,7 @@ class ScanResult:
         self.matches = matches
 
 
-# Decided to make this a separate function instead of compiling them at start just in case
-def compileRules(rulesdir: Path):
+def compileRules(rulesdir: Path = Path(__file__).parent.parent/"rules"):
     global rules
     filepaths = {}
 
@@ -24,45 +25,46 @@ def compileRules(rulesdir: Path):
     except Exception as e:
         print("An exception occurred while compiling the rules: " + str(e))
 
-# This shouldn't be used outside of engine module
-def _scanFile(filepath: Path):
+
+def _scanFile(filepath: Path) -> ScanResult | None:
     try:
         matches = rules.match(str(filepath))
         matched_rules = [match.rule for match in matches]
-
         return ScanResult(filepath, len(matches) > 0, matched_rules)
     except Exception as e:
-        print("An exception occurred during a file scan: " + str(e))
+        print(f"An exception occurred during a file scan: {e}")
         return None
 
-# This exists for ease of use
 def scanPath(scanpath: Path, returnnegatives: bool = False, recursive: bool = True):
+    """
+    Like scanPath(), but yields (result, current_index, total) tuples one by
+    one so callers can show real-time progress without blocking.
+
+    Yields: tuple[ScanResult, int, int]  →  (result, files_done, total_files)
+    """
+    if rules is None:
+        raise RuntimeError("Rules are not compiled. Call compileRules() first.")
+
     try:
-        filesToScan = []
-
-        # Making a list of files to scan
         if scanpath.is_file():
-            filesToScan = [scanpath]
+            files_to_scan = [scanpath]
         elif scanpath.is_dir():
-            if recursive:
-                filesToScan = [f for f in scanpath.rglob("*") if f.is_file()]
-            else:
-                filesToScan = [f for f in scanpath.iterdir() if f.is_file()]
+            glob = scanpath.rglob("*") if recursive else scanpath.iterdir()
+            files_to_scan = [f for f in glob if f.is_file()]
         else:
-            raise ValueError("Path is neither file nor directory")
-
-        # At this point we start actually scanning
-        results = []
-
-        for file in filesToScan:
-            result = _scanFile(file)
-
-            if not returnnegatives and not result.infected:
-                continue
-
-            results.append(result)
-
-        return results
+            raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
     except Exception as e:
-        print("An exception occurred during a path scan: " + str(e))
-        return None
+        print(f"Failed to collect files: {e}")
+        return
+
+    total = len(files_to_scan)
+
+    for idx, filepath in enumerate(files_to_scan, start=1):
+        result = _scanFile(filepath)
+        if result is None:
+            continue
+        if returnnegatives or result.infected:
+            yield result, idx, total
+        else:
+            # Still yield progress even for clean files so the bar moves
+            yield ScanResult(filepath, False, []), idx, total
