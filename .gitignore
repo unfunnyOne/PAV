@@ -1,6 +1,2 @@
 .idea/
 .venv/
-.rules/malware
-.rules/mobile_malware
-.rules/maldocs
-.rules/exploit_kits
