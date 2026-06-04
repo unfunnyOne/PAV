@@ -1,10 +1,7 @@
 import yara
 from pathlib import Path
-from typing import Generator
-
 
 rules = None
-
 
 class ScanResult:
     def __init__(self, filepath: Path, infected: bool, matches: list[str]):
@@ -12,36 +9,51 @@ class ScanResult:
         self.infected = infected
         self.matches = matches
 
-
+#Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent/"rules"):
     global rules
-    filepaths = {}
 
-    try:
-        for rule_file in rulesdir.rglob("*.yar"):
-            namespace = str(rule_file.relative_to(rulesdir)).replace("/", "_")
+    filepaths = {}
+    skipped = []
+
+    for rule_file in rulesdir.rglob("*.yar"):
+        namespace = str(rule_file.relative_to(rulesdir)).replace("\\", "_")
+        #I'm compiling each file individually to see if they cause a crash, then compile only those that work
+        #Some rules are using external libraries or sandboxes(like cuckoo, which was the case with /malware/MALW_AZORULT.yar)
+        #I don't have them yet, so that caused an exception and resulted in a crash
+        try:
+            yara.compile(filepath=str(rule_file))
             filepaths[namespace] = str(rule_file)
+        except Exception as e:
+            skipped.append((str(rule_file), str(e)))
+            continue
+    try:
         rules = yara.compile(filepaths=filepaths)
     except Exception as e:
-        print("An exception occurred while compiling the rules: " + str(e))
+        return False, f"Fatal compilation error: {e}"
+
+    msg = f"Rules compiled successfully. Loaded: {len(filepaths)}, skipped: {len(skipped)}"
+
+    if skipped:
+        msg += "\nSome rules were skipped due to errors."
+
+    return True, msg
 
 
 def _scanFile(filepath: Path) -> ScanResult | None:
+    #I'm not using rules.match(filepath) because it breaks once a non-ASCII character appears
     try:
-        matches = rules.match(str(filepath))
+        with open(filepath, "rb") as f:
+            data = f.read()
+        matches = rules.match(data=data)
+
         matched_rules = [match.rule for match in matches]
         return ScanResult(filepath, len(matches) > 0, matched_rules)
     except Exception as e:
         print(f"An exception occurred during a file scan: {e}")
         return None
 
-def scanPath(scanpath: Path, returnnegatives: bool = False, recursive: bool = True):
-    """
-    Like scanPath(), but yields (result, current_index, total) tuples one by
-    one so callers can show real-time progress without blocking.
-
-    Yields: tuple[ScanResult, int, int]  →  (result, files_done, total_files)
-    """
+def scanPath(scanpath: Path, recursive: bool = True):
     if rules is None:
         raise RuntimeError("Rules are not compiled. Call compileRules() first.")
 
@@ -60,11 +72,4 @@ def scanPath(scanpath: Path, returnnegatives: bool = False, recursive: bool = Tr
     total = len(files_to_scan)
 
     for idx, filepath in enumerate(files_to_scan, start=1):
-        result = _scanFile(filepath)
-        if result is None:
-            continue
-        if returnnegatives or result.infected:
-            yield result, idx, total
-        else:
-            # Still yield progress even for clean files so the bar moves
-            yield ScanResult(filepath, False, []), idx, total
+        yield _scanFile(filepath), idx, total

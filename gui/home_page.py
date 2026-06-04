@@ -1,187 +1,111 @@
-import sys
+from pathlib import Path
+from core import engine
 
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget,
-    QHBoxLayout, QVBoxLayout,
-    QPushButton, QLabel,
-    QFrame, QStackedWidget,
-    QApplication, QSpacerItem,
-    QSizePolicy
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QPlainTextEdit, QFileDialog
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QIcon
 
-from gui.scan_page import ScanPage
-
-
-NAV_ITEMS = [
-    ("🏠", "Home"),
-    ("🔍", "Scan"),
-    ("📋", "History"),
-    ("🔒", "Quarantine"),
-]
-
-SIDEBAR_STYLE = "background-color: #0f0f0f; border-right: 1px solid #1f1f1f;"
-
-BTN_BASE = """
-    QPushButton {{
-        background-color: {bg};
-        color: {fg};
-        text-align: left;
-        padding: 10px 14px;
-        border-radius: 10px;
-        font-size: 14px;
-        border: none;
-    }}
-    QPushButton:hover {{
-        background-color: {hover};
-        color: white;
-    }}
-"""
-
-BTN_NORMAL = BTN_BASE.format(bg="transparent", fg="#888888", hover="#1e1e1e")
-BTN_ACTIVE = BTN_BASE.format(bg="#1e3a8a", fg="white", hover="#1d4ed8")
-
-
-class SidebarButton(QPushButton):
-    def __init__(self, icon: str, label: str):
-        super().__init__(f"  {icon}  {label}")
-        self.setFixedHeight(44)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setActive(False)
-
-    def setActive(self, active: bool):
-        self.setStyleSheet(BTN_ACTIVE if active else BTN_NORMAL)
-
-
-class PlaceholderPage(QWidget):
-    def __init__(self, title: str):
+class PathSelection(QWidget):
+    def __init__(self):
         super().__init__()
-        self.setStyleSheet("background-color: #181818;")
-        layout = QVBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setLayout(layout)
 
-        icon = QLabel({"Home": "🏠", "History": "📋", "Quarantine": "🔒"}.get(title, "📄"))
-        icon.setStyleSheet("font-size: 48px;")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pathbox = QLineEdit()
+        self.pathbox.setReadOnly(True)
 
-        lbl = QLabel(title)
-        lbl.setStyleSheet("color: #555; font-size: 22px; font-weight: bold;")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.selectbutton = QPushButton("Browse")
 
-        sub = QLabel("This section is under construction")
-        sub.setStyleSheet("color: #333; font-size: 13px;")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.selectbutton.clicked.connect(self.selectPath)
 
-        layout.addWidget(icon)
-        layout.addSpacing(8)
-        layout.addWidget(lbl)
-        layout.addWidget(sub)
+        self.layout = QHBoxLayout()
+        self.layout.addWidget(self.pathbox)
+        self.layout.addWidget(self.selectbutton)
+        self.setLayout(self.layout)
 
+    def getPath(self):
+        return self.pathbox.text()
+
+    def selectPath(self):
+        path = QFileDialog.getExistingDirectory(self, "Select a directory")
+        if not path: return
+        self.pathbox.setText(path)
+
+class ScanWorker(QObject):
+    log = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, path, shownegatives):
+        super().__init__()
+        self.path = path
+        self.shownegatives = shownegatives
+
+    def run(self):
+        self.log.emit("Compiling the rules...\n")
+
+        success, message = engine.compileRules()
+        self.log.emit(f"{message}\n")
+
+        if not success:
+            self.finished.emit()
+            return
+
+        for result, idx, total in engine.scanPath(self.path, True):
+            if result.infected:
+                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}. Matches:")
+
+                for match in result.matches:
+                    self.log.emit(f"{match}")
+
+                self.log.emit("")
+
+            elif self.shownegatives:
+                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}\n")
+
+        self.finished.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.thread = None
+        self.worker = None
 
-        self.setWindowTitle("PAV")
-        self.resize(1200, 720)
-        self.setMinimumSize(900, 600)
-        self.setStyleSheet("background-color: #181818;")
+        self.setWindowTitle("PAV Testing")
 
-        # Central widget
-        central = QWidget()
-        self.setCentralWidget(central)
+        self.pathselectionframe = PathSelection()
+        self.startbutton = QPushButton("Start")
+        self.outputfield = QPlainTextEdit()
 
-        main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        central.setLayout(main_layout)
+        self.outputfield.setReadOnly(True)
+        self.startbutton.clicked.connect(lambda: self.startScan(True))
 
-        # ─────────── SIDEBAR ───────────
-        sidebar = QFrame()
-        sidebar.setFixedWidth(240)
-        sidebar.setStyleSheet(SIDEBAR_STYLE)
+        layout = QVBoxLayout()
+        layout.addWidget(self.pathselectionframe)
+        layout.addWidget(self.startbutton)
+        layout.addWidget(self.outputfield)
 
-        side_layout = QVBoxLayout()
-        side_layout.setContentsMargins(16, 24, 16, 24)
-        side_layout.setSpacing(6)
-        sidebar.setLayout(side_layout)
+        mainFrame = QWidget()
+        mainFrame.setLayout(layout)
+        self.setCentralWidget(mainFrame)
 
-        # Logo
-        logo_row = QHBoxLayout()
-        logo_icon = QLabel("🛡️")
-        logo_icon.setStyleSheet("font-size: 22px;")
-        logo_text = QLabel("PAV")
-        logo_text.setStyleSheet(
-            "color: white; font-size: 18px; font-weight: bold; letter-spacing: 0.5px;"
-        )
-        logo_row.addWidget(logo_icon)
-        logo_row.addWidget(logo_text)
-        logo_row.addStretch()
+    def appendLog(self, text):
+        self.outputfield.appendPlainText(text)
 
-        side_layout.addLayout(logo_row)
-        side_layout.addSpacing(20)
+    def startScan(self, shownegatives: bool = False):
+        if self.thread and self.thread.isRunning():
+            return
 
-        # Divider label
-        nav_label = QLabel("NAVIGATION")
-        nav_label.setStyleSheet("color: #333; font-size: 10px; letter-spacing: 1.5px;")
-        side_layout.addWidget(nav_label)
-        side_layout.addSpacing(4)
+        path = Path(self.pathselectionframe.getPath())
 
-        # ─────────── STACK ───────────
-        self.stack = QStackedWidget()
-        self.stack.setStyleSheet("background-color: #181818;")
+        self.thread = QThread()
+        self.worker = ScanWorker(path, shownegatives)
 
-        self.home_page     = PlaceholderPage("Home")
-        self.scan_page     = ScanPage()
-        self.history_page  = PlaceholderPage("History")
-        self.quarantine_page = PlaceholderPage("Quarantine")
+        self.worker.moveToThread(self.thread)
 
-        pages = [
-            self.home_page,
-            self.scan_page,
-            self.history_page,
-            self.quarantine_page,
-        ]
-        for p in pages:
-            self.stack.addWidget(p)
+        self.thread.started.connect(self.worker.run)
+        self.worker.log.connect(self.appendLog)
+        self.worker.finished.connect(self.thread.quit)
 
-        # ─────────── NAV BUTTONS ───────────
-        self._nav_buttons: list[SidebarButton] = []
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
 
-        for idx, (icon, label) in enumerate(NAV_ITEMS):
-            btn = SidebarButton(icon, label)
-            page = pages[idx]
-            btn.clicked.connect(lambda checked, b=btn, p=page: self._navigate(b, p))
-            self._nav_buttons.append(btn)
-            side_layout.addWidget(btn)
-
-        # Activate "Home" by default
-        self._navigate(self._nav_buttons[0], self.home_page)
-
-        side_layout.addStretch()
-
-        # Because I can
-        author = QLabel("unfunny0ne, 2026")
-        author.setStyleSheet("color: #2a2a2a; font-size: 11px;")
-        author.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        side_layout.addWidget(author)
-
-        # ─────────── ASSEMBLE ───────────
-        main_layout.addWidget(sidebar)
-        main_layout.addWidget(self.stack, 1)
-
-    # ─────────── NAVIGATION ───────────
-    def _navigate(self, active_btn: SidebarButton, page: QWidget):
-        for btn in self._nav_buttons:
-            btn.setActive(btn is active_btn)
-        self.stack.setCurrentWidget(page)
-
-
-def run():
-    app = QApplication(sys.argv)
-    app.setFont(QFont("Segoe UI", 10))
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+        self.thread.start()
