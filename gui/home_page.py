@@ -56,10 +56,10 @@ class ScanWorker(QObject):
                 for match in result.matches:
                     self.log.emit(f"{match}")
 
-                self.log.emit("")
+                self.log.emit(f"Total risk score: {result.riskscore}\n")
 
             elif self.shownegatives:
-                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}\n")
+                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}\nTotal risk score: {result.riskscore}\n")
 
         self.finished.emit()
 
