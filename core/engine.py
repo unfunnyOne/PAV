@@ -1,19 +1,28 @@
-import yara
+import os
 from pathlib import Path
 
-#Remove this later
+os.environ["LIBARCHIVE"] = str(Path(__file__).resolve().parent.parent/"bin"/"libarchive-13.dll")
+
+# Base
+import yara
+
+# Archives
+import libarchive
+
+# Remove this later
 import re
 
-compiled_rules = {}
+# Settings for archive scanning. We don't want to unpack zip bombs, do we?
+MAX_ARCHIVE_DEPTH = 3
+MAX_ARCHIVE_FILES = 2000
+MAX_ARCHIVE_UNPACKED_SIZE = 1000 * 1024 * 1024  # 1000 MB
+MAX_ARCHIVE_FILE_SIZE = 500 * 1024 * 1024       # 500 MB
 
-#TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
-#Right now I'll just fill it with 1's
+# TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
+# Right now I'll just fill it with 1's
 ruleweights = {}
 
-#Remove this too, once we have an actual weights dataset
-def extract_rule_names(rule_file: Path):
-    text = rule_file.read_text(encoding="utf-8", errors="ignore")
-    return re.findall(r"\brule\s+([a-zA-Z0-9_]+)", text)
+compiled_rules = {}
 
 class ScanResult:
     def __init__(self, filepath: Path, infected: bool, matches: list[str], riskscore: int):
@@ -22,7 +31,68 @@ class ScanResult:
         self.matches = matches
         self.riskscore = riskscore
 
-#Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
+# I could've used a dictionary instead, but I think it looks cleaner this way
+class FileData:
+    def __init__(self, filepath: Path, data: bytes):
+        self.filepath = filepath
+        self.data = data
+
+# Remove this too, once we have an actual weights dataset
+def _extractRuleNames(rule_file: Path):
+    text = rule_file.read_text(encoding="utf-8", errors="ignore")
+    return re.findall(r"\brule\s+([a-zA-Z0-9_]+)", text)
+
+# Since we're already reading bytes, might as well use that
+def _isArchive(data: bytes) -> bool:
+    return (
+        data.startswith(b"PK") or          # zip
+        data.startswith(b"Rar!\x1A") or    # rar
+        data.startswith(b"7z\xBC\xAF") or   # 7z
+        data.startswith(b"\x1F\x8B") or     # gz
+        (len(data) > 262 and data[257:262] == b"ustar")  # tar
+    )
+
+# This function is recursive(to read nested archives)
+# God, that took a long time to make
+def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> list[FileData]:
+    files = []
+
+    with libarchive.memory_reader(data) as archive:
+        for entry in archive:
+            entry_data = b"".join(entry.get_blocks())
+
+            # Making sure not to exceed our limits
+            if len(entry_data) > MAX_ARCHIVE_FILE_SIZE:
+                continue
+
+            total_size += len(entry_data)
+            file_count += 1
+
+            if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
+                break
+
+            new_prefix = f"{prefix}/{entry.pathname}"
+            print(f"Old prefix: {prefix}, entry name: {entry.pathname}\nNew prefix: {new_prefix}")
+            if _isArchive(entry_data) and depth < MAX_ARCHIVE_DEPTH:
+                try:
+                    # If it's a nested archive, we start recursion
+                    files.extend(
+                        _collectFromArchive(
+                            data=entry_data,
+                            total_size=total_size,
+                            file_count=file_count,
+                            depth=depth + 1,
+                            prefix=new_prefix
+                        )
+                    )
+                except Exception as e:
+                    print(f"Nested archive error: {e}")
+            else:
+                files.append(FileData(Path(new_prefix), entry_data))
+
+    return files
+
+# Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
     global compiled_rules
 
@@ -44,8 +114,7 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
             # This is here to prevent duplicates from overriding each other
             namespace = str(relative).replace("\\", "_")
             #TODO: Remove this and load an existing dataset instead
-            for r in extract_rule_names(rule_file):
-                print(f"Setting weight for: {namespace}::{r}")
+            for r in _extractRuleNames(rule_file):
                 ruleweights[f"{namespace}::{r}"] = 1
 
             if category not in filepaths:
@@ -78,21 +147,18 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
 
     return True, msg
 
-
-def _scanFile(filepath: Path) -> ScanResult | None:
-    #I'm using rules.match(data) instead of rules.match(filepath) because it breaks once a non-ASCII character appears
+def _scanFile(filedata: FileData) -> ScanResult | None:
+    # I'm using rules.match(data) instead of rules.match(filepath) because it breaks once a non-ASCII character appears
     try:
-        #First, we check for known signatures
-        with open(filepath, "rb") as f:
-            data = f.read()
-        matches = compiled_rules["signatures"].match(data=data)
+        # First, we check for known signatures
+        matches = compiled_rules["signatures"].match(data=filedata.data)
 
         if matches:
             matched_rules = [match.rule for match in matches]
-            return ScanResult(filepath, True, matched_rules, 100)
+            return ScanResult(filedata.filepath, True, matched_rules, 100)
 
-        #Now, since our file doesn't match any known signatures, we'll run a heuristic analysis
-        matches = compiled_rules["heuristics"].match(data=data)
+        # Now, since our file doesn't match any known signatures, we'll run a heuristic analysis
+        matches = compiled_rules["heuristics"].match(data=filedata.data)
 
         if matches:
             score = 0
@@ -102,24 +168,36 @@ def _scanFile(filepath: Path) -> ScanResult | None:
                 score += ruleweights[f"{match.namespace}::{match.rule}"]
 
             #TODO: Don't forget to remove that "score>3" and replace it with something that actually makes sense
-            return ScanResult(filepath, score>3, matched_rules, score)
+            return ScanResult(filedata.filepath, score>3, matched_rules, score)
         else:
-            return ScanResult(filepath, False, [], 0)
+            return ScanResult(filedata.filepath, False, [], 0)
 
     except Exception as e:
         print(f"An exception occurred during a file scan: {e}")
         return None
 
-def scanPath(scanpath: Path, recursive: bool = True):
+def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
     if not compiled_rules:
         raise RuntimeError("Rules are not compiled. Call compileRules() first.")
 
+    files_to_scan = []
+
     try:
         if scanpath.is_file():
-            files_to_scan = [scanpath]
+            data = scanpath.read_bytes()
+            files_to_scan.append(FileData(scanpath, data))
         elif scanpath.is_dir():
             glob = scanpath.rglob("*") if recursive else scanpath.iterdir()
-            files_to_scan = [f for f in glob if f.is_file()]
+
+            for f in glob:
+                if f.is_file():
+                    data = f.read_bytes()
+
+                    if _isArchive(data):
+                        files_to_scan.extend(_collectFromArchive(data=data, prefix=str(f)))
+                    else:
+                        files_to_scan.append(FileData(f, data))
+        # Not sure if that's even possible, but I'll add this just in case
         else:
             raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
     except Exception as e:
@@ -128,5 +206,6 @@ def scanPath(scanpath: Path, recursive: bool = True):
 
     total = len(files_to_scan)
 
-    for idx, filepath in enumerate(files_to_scan, start=1):
-        yield _scanFile(filepath), idx, total
+    for idx, filedata in enumerate(files_to_scan, start=1):
+        result = _scanFile(filedata)
+        yield result, idx, total
