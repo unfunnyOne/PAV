@@ -3,6 +3,9 @@ from pathlib import Path
 
 os.environ["LIBARCHIVE"] = str(Path(__file__).resolve().parent.parent/"bin"/"libarchive-13.dll")
 
+# For debugging and stuff
+import warnings
+
 # Base
 import yara
 
@@ -12,11 +15,15 @@ import libarchive
 # Remove this later
 import re
 
+# TODO: Make a config file and save settings there
+# Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
+MAX_QUEUE_SIZE = 500 * 1024 * 1024 # 500 MB
+MAX_FILE_SIZE = 1000 * 1024 * 1024  # 1000 MB
+
 # Settings for archive scanning. We don't want to unpack zip bombs, do we?
 MAX_ARCHIVE_DEPTH = 3
 MAX_ARCHIVE_FILES = 2000
-MAX_ARCHIVE_UNPACKED_SIZE = 1000 * 1024 * 1024  # 1000 MB
-MAX_ARCHIVE_FILE_SIZE = 500 * 1024 * 1024       # 500 MB
+MAX_ARCHIVE_UNPACKED_SIZE = 2000 * 1024 * 1024  # 2000 MB
 
 # TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
 # Right now I'll just fill it with 1's
@@ -59,37 +66,41 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
 
     with libarchive.memory_reader(data) as archive:
         for entry in archive:
-            entry_data = b"".join(entry.get_blocks())
+            entry_data = bytearray()
 
-            # Making sure not to exceed our limits
-            if len(entry_data) > MAX_ARCHIVE_FILE_SIZE:
-                continue
+            # get_blocks() is a generator, so we're gonna use it to read the file block by block
+            # so we don't load a 10GB file into the RAM before checking its size
+            for block in entry.get_blocks():
+                entry_data.extend(block)
+                if len(entry_data) > MAX_FILE_SIZE:
+                    warnings.warn(f"Skipped a file exceeding {MAX_FILE_SIZE} bytes", Warning, 1, f"{prefix}")
+                    break
+            else:   # if loop completed without a break
+                total_size += len(entry_data)
+                file_count += 1
 
-            total_size += len(entry_data)
-            file_count += 1
+                if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
+                    warnings.warn(f"Unpacked archive exceeded max size: {MAX_ARCHIVE_UNPACKED_SIZE}", Warning, 1, f"{prefix}")
+                    break
 
-            if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
-                break
-
-            new_prefix = f"{prefix}/{entry.pathname}"
-            print(f"Old prefix: {prefix}, entry name: {entry.pathname}\nNew prefix: {new_prefix}")
-            if _isArchive(entry_data) and depth < MAX_ARCHIVE_DEPTH:
-                try:
-                    # If it's a nested archive, we start recursion
-                    files.extend(
-                        _collectFromArchive(
-                            data=entry_data,
-                            total_size=total_size,
-                            file_count=file_count,
-                            depth=depth + 1,
-                            prefix=new_prefix
+                new_prefix = f"{prefix}/{entry.pathname}"
+                print(f"Old prefix: {prefix}, entry name: {entry.pathname}\nNew prefix: {new_prefix}")
+                if _isArchive(entry_data) and depth < MAX_ARCHIVE_DEPTH:
+                    try:
+                        # If it's a nested archive, we start recursion
+                        files.extend(
+                            _collectFromArchive(
+                                data=entry_data,
+                                total_size=total_size,
+                                file_count=file_count,
+                                depth=depth + 1,
+                                prefix=new_prefix
+                            )
                         )
-                    )
-                except Exception as e:
-                    print(f"Nested archive error: {e}")
-            else:
-                files.append(FileData(Path(new_prefix), entry_data))
-
+                    except Exception as e:
+                        print(f"Nested archive error: {e}")
+                else:
+                    files.append(FileData(Path(new_prefix), entry_data))
     return files
 
 # Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
@@ -185,27 +196,44 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
     try:
         if scanpath.is_file():
             data = scanpath.read_bytes()
-            files_to_scan.append(FileData(scanpath, data))
+            yield _scanFile(FileData(scanpath,data)), 1, 1
         elif scanpath.is_dir():
             glob = scanpath.rglob("*") if recursive else scanpath.iterdir()
+            queue_size = 0
 
             for f in glob:
+                # Just in case someone sets recursive to false, I'm checking is the entry is a file
                 if f.is_file():
+                    if f.stat().st_size > MAX_FILE_SIZE:
+                        warnings.warn(f"Skipping a file exceeding max size: {f.name}")
+                        continue
                     data = f.read_bytes()
 
+                    # Read the archive contents if it's an archive
                     if _isArchive(data):
-                        files_to_scan.extend(_collectFromArchive(data=data, prefix=str(f)))
+                        extracted = _collectFromArchive(data=data, prefix=str(f))
+                        extracted_size = sum(len(file.data) for file in extracted)
                     else:
-                        files_to_scan.append(FileData(f, data))
+                        extracted = [FileData(f, data)]
+                        extracted_size = len(data)
+
+                    # If the new file is too large for our queue limit, scan the current queue and empty it
+                    if queue_size+extracted_size > MAX_QUEUE_SIZE:
+                        for idx, filedata in enumerate(files_to_scan, start=1):
+                            yield _scanFile(filedata), idx, len(files_to_scan)
+                        files_to_scan.clear()
+                        queue_size = 0
+
+                    # Add file(s) to the queue
+                    files_to_scan.extend(extracted)
+                    queue_size += extracted_size
+
+            # Scan the last queue!
+            for idx, filedata in enumerate(files_to_scan, start=1):
+                yield _scanFile(filedata), idx, len(files_to_scan)
         # Not sure if that's even possible, but I'll add this just in case
         else:
             raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
     except Exception as e:
-        print(f"Failed to collect files: {e}")
+        print(f"Failed to scan directory: {e}")
         return
-
-    total = len(files_to_scan)
-
-    for idx, filedata in enumerate(files_to_scan, start=1):
-        result = _scanFile(filedata)
-        yield result, idx, total
