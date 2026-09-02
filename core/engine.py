@@ -191,17 +191,20 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
     if not compiled_rules:
         raise RuntimeError("Rules are not compiled. Call compileRules() first.")
 
-    files_to_scan = []
-
     try:
         if scanpath.is_file():
             data = scanpath.read_bytes()
             yield _scanFile(FileData(scanpath,data)), 1, 1
         elif scanpath.is_dir():
-            glob = scanpath.rglob("*") if recursive else scanpath.iterdir()
-            queue_size = 0
+            # Doing this because I don't want to load all the Path elements into the memory
+            if recursive:
+                total = sum(1 for f in scanpath.rglob("*") if f.is_file())
+                glob = scanpath.rglob("*")
+            else:
+                total = sum(1 for f in scanpath.iterdir() if f.is_file())
+                glob = scanpath.iterdir()
 
-            for f in glob:
+            for idx, f in enumerate(glob, start=1):
                 # Just in case someone sets recursive to false, I'm checking is the entry is a file
                 if f.is_file():
                     if f.stat().st_size > MAX_FILE_SIZE:
@@ -212,28 +215,14 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
                     # Read the archive contents if it's an archive
                     if _isArchive(data):
                         extracted = _collectFromArchive(data=data, prefix=str(f))
-                        extracted_size = sum(len(file.data) for file in extracted)
+                        for filedata in extracted:
+                            yield _scanFile(filedata), idx, total
                     else:
-                        extracted = [FileData(f, data)]
-                        extracted_size = len(data)
+                        yield _scanFile(FileData(f, data)), idx, total
 
-                    # If the new file is too large for our queue limit, scan the current queue and empty it
-                    if queue_size+extracted_size > MAX_QUEUE_SIZE:
-                        for idx, filedata in enumerate(files_to_scan, start=1):
-                            yield _scanFile(filedata), idx, len(files_to_scan)
-                        files_to_scan.clear()
-                        queue_size = 0
-
-                    # Add file(s) to the queue
-                    files_to_scan.extend(extracted)
-                    queue_size += extracted_size
-
-            # Scan the last queue!
-            for idx, filedata in enumerate(files_to_scan, start=1):
-                yield _scanFile(filedata), idx, len(files_to_scan)
         # Not sure if that's even possible, but I'll add this just in case
         else:
             raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
     except Exception as e:
-        print(f"Failed to scan directory: {e}")
+        print(f"Failed to scan path {scanpath}:\n{e}")
         return
