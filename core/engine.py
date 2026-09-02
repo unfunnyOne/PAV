@@ -197,11 +197,12 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
             yield _scanFile(FileData(scanpath,data)), 1, 1
         elif scanpath.is_dir():
             # Doing this because I don't want to load all the Path elements into the memory
+            # It does walk the paths twice, sure, but I don't have better ideas
             if recursive:
-                total = sum(1 for f in scanpath.rglob("*") if f.is_file())
+                total = sum(1 for f in scanpath.rglob("*"))
                 glob = scanpath.rglob("*")
             else:
-                total = sum(1 for f in scanpath.iterdir() if f.is_file())
+                total = sum(1 for f in scanpath.iterdir())
                 glob = scanpath.iterdir()
 
             for idx, f in enumerate(glob, start=1):
