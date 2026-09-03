@@ -1,5 +1,6 @@
 from pathlib import Path
 from core import engine
+from core import updater
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -40,6 +41,9 @@ class ScanWorker(QObject):
         self.shownegatives = shownegatives
 
     def run(self):
+        self.log.emit("Updating the rules...\n")
+        success, message = updater.updateRules()
+        self.log.emit(f"{message}\n")
         self.log.emit("Compiling the rules...\n")
 
         success, message = engine.compileRules()

@@ -34,14 +34,12 @@ def _loadSources():
             for source in data
         ]
 
-def _loadVersions():
+def _loadVersions() -> dict[str, str]:
     if not VERSIONS_FILE.exists() or VERSIONS_FILE.stat().st_size == 0:
         return {}
 
     with VERSIONS_FILE.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    return {source["name"]: source["last_update"] for source in data}
+        return json.load(f)
 
 def _saveVersions(versions: dict[str, str]):
     with VERSIONS_FILE.open("w", encoding="utf-8") as f:
@@ -75,17 +73,21 @@ def _unpackRules(archive_path: Path, destination: Path):
                     f.write(block)
 
 def updateRules():
+    print("Start")
     # First, we gotta determine which rules need updating. Load sources and versions
     sources = _loadSources()
+    print("Loaded sources")
     versions = _loadVersions()
+    print("Data loaded")
 
     to_update = []
     for source in sources:
         try:
             release_data = requests.get(source.version_url, timeout=10)
             release_data.raise_for_status()
-
+            print(f"Got release data: {release_data.json()["published_at"]}")
             if versions.get(source.name) is None or datetime.fromisoformat(release_data.json()["published_at"].replace("Z", "+00:00")) > datetime.fromisoformat(versions[source.name].replace("Z", "+00:00")):
+                print(f"Updating {source.name}")
                 to_update.append(source)
                 versions[source.name] = release_data.json()["published_at"]
 
@@ -94,11 +96,12 @@ def updateRules():
 
     # Now that we know which rules should be updated, let's start downloading
     # Notice how I'm using a temp directory! I feel so smart about it lmao
+    print("Built to_update")
     with tempfile.TemporaryDirectory() as tempdir:
         temp_path = Path(tempdir)
         try:
             for source in to_update:
-                archive_path = _downloadRules(source.link, temp_path/"rules.zip")
+                archive_path = _downloadRules(source.link, temp_path/f"rules_{source.name}.zip")
 
                 destination_path = Path(__file__).resolve().parent.parent / "rules" / source.category / source.name
 
@@ -107,9 +110,10 @@ def updateRules():
                     shutil.rmtree(destination_path)
 
                 _unpackRules(archive_path, destination_path)
-                # Now, one last thing: update the version
+                # Now, one last thing: update the versions
                 _saveVersions(versions)
-
-
+                print(f"Source {source.name} saved")
         except Exception as e:
             print(f"An exception occured when downloading rules: {e}")
+
+    return True, f"Rules updated: {len(to_update)}"
