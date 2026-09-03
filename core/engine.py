@@ -26,17 +26,19 @@ MAX_ARCHIVE_UNPACKED_SIZE = 0
 compiled_rules = {}
 
 class ScanResult:
-    def __init__(self, filepath: Path, infected: bool, matches: list[str], riskscore: int):
+    def __init__(self, filepath: Path, infected: bool, matches: list[str], riskscore: int, info: str = ""):
         self.filepath = filepath
         self.infected = infected
         self.matches = matches
         self.riskscore = riskscore
+        self.info = info
 
 # I could've used a dictionary instead, but I think it looks cleaner this way
 class FileData:
-    def __init__(self, filepath: Path, data: bytes):
+    def __init__(self, filepath: Path, data: bytes, info: str = ""):
         self.filepath = filepath
         self.data = data
+        self.info = info
 
 # Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
@@ -121,7 +123,7 @@ def _isArchive(data: bytes) -> bool:
 
 # This function is recursive(to read nested archives)
 # God, that took a long time to make
-def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> tuple[list[FileData], int, int]:
+def _collectFromArchive( archive_path: Path, data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> tuple[list[FileData], int, int]:
     files = []
 
     with libarchive.memory_reader(data) as archive:
@@ -150,6 +152,7 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
                         try:
                             # If it's a nested archive, we start recursion
                             nested_files, total_size, file_count = _collectFromArchive(
+                                archive_path=archive_path,
                                 data=entry_data,
                                 total_size=total_size,
                                 file_count=file_count,
@@ -162,26 +165,25 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
                     else:
                         warnings.warn(f"Reached max recursion depth at {prefix}!", Warning, 1, f"{prefix}")
                 else:
-                    files.append(FileData(Path(new_prefix), entry_data))
+                    files.append(FileData(archive_path, entry_data, new_prefix))
     return files, total_size, file_count
 
 def _scanFile(filedata: FileData) -> ScanResult | None:
     # I'm using rules.match(data) instead of rules.match(filepath) because it breaks once a non-ASCII character appears
     try:
-        # First, we check for known signatures
         matches = compiled_rules.match(data=filedata.data) or {}
 
         matched_rules = [match.rule for match in matches]
         score = 0
+        important = False
         for match in matches:
-            # Importance is assigned manually, so those should be prioritized
+            # Importance is assigned manually, so those should be flagged for further investigation by the user
             if match.meta.get("importance") is not None:
-                score += match.meta["importance"] + (match.meta["score"]*(max(match.meta["quality"],0)/100))
-            else:
-                score += match.meta["score"] * (max(match.meta["quality"], 0) / 100)
+                important = True
+            score += match.meta["score"] * (max(match.meta["quality"], 0) / 100)
             print(f"{match}, new score: {score}")
 
-        return ScanResult(filedata.filepath, score>=DETECTION_THRESHOLD, matched_rules, score)
+        return ScanResult(filedata.filepath, important or score>=DETECTION_THRESHOLD, matched_rules, score, filedata.info)
 
     except Exception as e:
         print(f"An exception occurred during a file scan: {e}")
@@ -215,7 +217,7 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
 
                     # Read the archive contents if it's an archive
                     if _isArchive(data):
-                        extracted = _collectFromArchive(data=data, prefix=str(f))[0] #"[0]" because it returns a tuple
+                        extracted = _collectFromArchive(archive_path=f, data=data, prefix=str(f))[0] #"[0]" because it returns a tuple
                         for filedata in extracted:
                             yield _scanFile(filedata), idx, total
                     else:

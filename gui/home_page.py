@@ -58,7 +58,7 @@ class ScanWorker(QObject):
 
         for result, idx, total in engine.scanPath(self.path, True):
             if result.infected:
-                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}. Matches:")
+                self.log.emit(f"({idx}/{total}) {result.filepath}: {result.infected}.\nInfo: {result.info}\nMatches:")
 
                 for match in result.matches:
                     self.log.emit(f"{match}")

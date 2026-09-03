@@ -3,7 +3,7 @@
 # I really do not recommend setting this higher than your RAM
 MAX_FILE_SIZE = 2147483648  #2 GB
 # Score threshold at which a file is considered infected. Change if you're getting too much false positives/false negatives
-DETECTION_THRESHOLD = 60
+DETECTION_THRESHOLD = 51
 
 [archive]
 # Max recursion depth. 5 should be more than enough for most cases
