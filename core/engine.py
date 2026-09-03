@@ -115,10 +115,10 @@ def loadConfig() -> tuple[bool, str]:
             config = tomllib.load(f)
 
         # Validation
-        if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise Exception("Invalid MAX_FILE_SIZE")
-        if config["archive"]["MAX_ARCHIVE_DEPTH"] is None or config["archive"]["MAX_ARCHIVE_DEPTH"] < 0: raise Exception("Invalid MAX_ARCHIVE_DEPTH")
-        if config["archive"]["MAX_ARCHIVE_FILES"] is None or config["archive"]["MAX_ARCHIVE_FILES"] < 0: raise Exception("Invalid MAX_ARCHIVE_FILES")
-        if config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] is None or config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] < 0: raise Exception("Invalid MAX_ARCHIVE_UNPACKED_SIZE")
+        if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise ValueError("Invalid MAX_FILE_SIZE")
+        if config["archive"]["MAX_ARCHIVE_DEPTH"] is None or config["archive"]["MAX_ARCHIVE_DEPTH"] < 0: raise ValueError("Invalid MAX_ARCHIVE_DEPTH")
+        if config["archive"]["MAX_ARCHIVE_FILES"] is None or config["archive"]["MAX_ARCHIVE_FILES"] < 0: raise ValueError("Invalid MAX_ARCHIVE_FILES")
+        if config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] is None or config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] < 0: raise ValueError("Invalid MAX_ARCHIVE_UNPACKED_SIZE")
 
         # Assigning
         MAX_FILE_SIZE = config["scan"]["MAX_FILE_SIZE"]
@@ -162,7 +162,7 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
                 file_count += 1
 
                 if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
-                    warnings.warn(f"Unpacked archive exceeded max size: {MAX_ARCHIVE_UNPACKED_SIZE}", Warning, 1, f"{prefix}")
+                    warnings.warn(f"Unpacked archive {prefix} exceeded max size: {MAX_ARCHIVE_UNPACKED_SIZE}", Warning, 1, f"{prefix}")
                     break
 
                 new_prefix = f"{prefix}/{entry.pathname}"
@@ -170,7 +170,6 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
                     if depth < MAX_ARCHIVE_DEPTH:
                         try:
                             # If it's a nested archive, we start recursion
-                            #
                             nested_files, total_size, file_count = _collectFromArchive(
                                 data=entry_data,
                                 total_size=total_size,
