@@ -17,7 +17,6 @@ import re
 
 # TODO: Make a config file and save settings there
 # Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
-MAX_QUEUE_SIZE = 500 * 1024 * 1024 # 500 MB
 MAX_FILE_SIZE = 1000 * 1024 * 1024  # 1000 MB
 
 # Settings for archive scanning. We don't want to unpack zip bombs, do we?
@@ -27,7 +26,7 @@ MAX_ARCHIVE_UNPACKED_SIZE = 2000 * 1024 * 1024  # 2000 MB
 
 # TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
 # Right now I'll just fill it with 1's
-ruleweights = {}
+rule_weights = {}
 
 compiled_rules = {}
 
@@ -61,7 +60,7 @@ def _isArchive(data: bytes) -> bool:
 
 # This function is recursive(to read nested archives)
 # God, that took a long time to make
-def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> list[FileData]:
+def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> (list[FileData], int, int):
     files = []
 
     with libarchive.memory_reader(data) as archive:
@@ -73,9 +72,10 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
             for block in entry.get_blocks():
                 entry_data.extend(block)
                 if len(entry_data) > MAX_FILE_SIZE:
-                    warnings.warn(f"Skipped a file exceeding {MAX_FILE_SIZE} bytes", Warning, 1, f"{prefix}")
+                    warnings.warn(f"Skipped a file exceeding {MAX_FILE_SIZE} bytes in {prefix}", Warning, 1, f"{prefix}")
                     break
             else:   # if loop completed without a break
+                entry_data = bytes(entry_data)
                 total_size += len(entry_data)
                 file_count += 1
 
@@ -84,24 +84,23 @@ def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, d
                     break
 
                 new_prefix = f"{prefix}/{entry.pathname}"
-                print(f"Old prefix: {prefix}, entry name: {entry.pathname}\nNew prefix: {new_prefix}")
                 if _isArchive(entry_data) and depth < MAX_ARCHIVE_DEPTH:
                     try:
                         # If it's a nested archive, we start recursion
-                        files.extend(
-                            _collectFromArchive(
-                                data=entry_data,
-                                total_size=total_size,
-                                file_count=file_count,
-                                depth=depth + 1,
-                                prefix=new_prefix
-                            )
+                        #
+                        nested_files, total_size, file_count = _collectFromArchive(
+                            data=entry_data,
+                            total_size=total_size,
+                            file_count=file_count,
+                            depth=depth + 1,
+                            prefix=new_prefix
                         )
+                        files.extend(nested_files)
                     except Exception as e:
                         print(f"Nested archive error: {e}")
                 else:
                     files.append(FileData(Path(new_prefix), entry_data))
-    return files
+    return files, total_size, file_count
 
 # Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
@@ -126,7 +125,7 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
             namespace = str(relative).replace("\\", "_")
             #TODO: Remove this and load an existing dataset instead
             for r in _extractRuleNames(rule_file):
-                ruleweights[f"{namespace}::{r}"] = 1
+                rule_weights[f"{namespace}::{r}"] = 1
 
             if category not in filepaths:
                 filepaths[category] = {}
@@ -176,7 +175,7 @@ def _scanFile(filedata: FileData) -> ScanResult | None:
             matched_rules = [match.rule for match in matches]
 
             for match in matches:
-                score += ruleweights[f"{match.namespace}::{match.rule}"]
+                score += rule_weights[f"{match.namespace}::{match.rule}"]
 
             #TODO: Don't forget to remove that "score>3" and replace it with something that actually makes sense
             return ScanResult(filedata.filepath, score>3, matched_rules, score)
@@ -191,22 +190,22 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
     if not compiled_rules:
         raise RuntimeError("Rules are not compiled. Call compileRules() first.")
 
-    try:
-        if scanpath.is_file():
-            data = scanpath.read_bytes()
-            yield _scanFile(FileData(scanpath,data)), 1, 1
-        elif scanpath.is_dir():
-            # Doing this because I don't want to load all the Path elements into the memory
-            # It does walk the paths twice, sure, but I don't have better ideas
-            if recursive:
-                total = sum(1 for f in scanpath.rglob("*"))
-                glob = scanpath.rglob("*")
-            else:
-                total = sum(1 for f in scanpath.iterdir())
-                glob = scanpath.iterdir()
+    if scanpath.is_file():
+        data = scanpath.read_bytes()
+        yield _scanFile(FileData(scanpath,data)), 1, 1
+    elif scanpath.is_dir():
+        # Doing this because I don't want to load all the Path elements into the memory
+        # It does walk the paths twice, sure, but I don't have better ideas
+        if recursive:
+            total = sum(1 for f in scanpath.rglob("*"))
+            glob = scanpath.rglob("*")
+        else:
+            total = sum(1 for f in scanpath.iterdir())
+            glob = scanpath.iterdir()
 
-            for idx, f in enumerate(glob, start=1):
-                # Just in case someone sets recursive to false, I'm checking is the entry is a file
+        for idx, f in enumerate(glob, start=1):
+            try:
+                # No point in scanning directory objects, right?
                 if f.is_file():
                     if f.stat().st_size > MAX_FILE_SIZE:
                         warnings.warn(f"Skipping a file exceeding max size: {f.name}")
@@ -215,15 +214,15 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
 
                     # Read the archive contents if it's an archive
                     if _isArchive(data):
-                        extracted = _collectFromArchive(data=data, prefix=str(f))
-                        for filedata in extracted:
-                            yield _scanFile(filedata), idx, total
+                        extracted,_,_ = _collectFromArchive(data=data, prefix=str(f)) #"_,_" because it also returns
+                        for filedata in extracted:                                    # total size and file count
+                            yield _scanFile(filedata), idx, total                     # for recursion purposes
                     else:
                         yield _scanFile(FileData(f, data)), idx, total
+            except Exception as e:
+                print(f"Exception while scanning a directory: {e}. Skipping")
+                continue
 
-        # Not sure if that's even possible, but I'll add this just in case
-        else:
-            raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
-    except Exception as e:
-        print(f"Failed to scan path {scanpath}:\n{e}")
-        return
+    # Not sure if that's even possible, but I'll add this just in case
+    else:
+        raise ValueError(f"Path is neither a file nor a directory: {scanpath}")
