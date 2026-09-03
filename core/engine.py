@@ -19,15 +19,12 @@ import re
 # Everything is stored in the config file! Don't forget to loadConfig()!
 # Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
 MAX_FILE_SIZE = 0
+DETECTION_THRESHOLD = 0
 
 # Settings for archive scanning. We don't want to unpack zip bombs, do we?
 MAX_ARCHIVE_DEPTH = 0
 MAX_ARCHIVE_FILES = 0
 MAX_ARCHIVE_UNPACKED_SIZE = 0
-
-# TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
-# Right now I'll just fill it with 1's
-rule_weights = {}
 
 compiled_rules = {}
 
@@ -61,24 +58,16 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
     #Categorizing and making sure that all of our rules are actually compiling
     for rule_file in rulesdir.rglob("*.yar"):
         try:
-            #Checking if the rule compiles before adding it to the list
+            # Checking if the rule compiles before adding it to the list
             rule = yara.compile(filepath=str(rule_file))
 
             relative = rule_file.relative_to(rulesdir)
-            # This returns the directory name of our category folder(signatures/heuristics as of 05.06)
-            category = relative.parts[0]
 
             # This is here to prevent duplicates from overriding each other
             namespace = str(relative).replace("\\", "_")
-            #TODO: Remove this and load an existing dataset instead
-            for r in _extractRuleNames(rule_file):
-                rule_weights[f"{namespace}::{r}"] = 1
 
-            if category not in filepaths:
-                filepaths[category] = {}
-            #Rule successfully compiles, so we add it to the final list for compilation
-            filepaths[category][namespace] = str(rule_file)
-
+            # Rule successfully compiles, so we add it to the final list for compilation
+            filepaths[namespace] = str(rule_file)
         except Exception as e:
             #Saving this for debug
             skipped.append((str(rule_file), str(e)))
@@ -86,28 +75,23 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
 
     #Now we're actually compiling the rules
     try:
-        for category in filepaths:
-            compiled_rules[category] = yara.compile(filepaths=filepaths[category])
+        compiled_rules = yara.compile(filepaths=filepaths)
     except Exception as e:
         return False, f"Couldn't compile the rules: {e}"
 
-    loaded_rules = sum(len(filepaths) for filepaths in filepaths.values())
+    loaded_rules = len(filepaths)
     msg = (
         f"Rules compiled successfully.\n"
-        f"Categories loaded: {len(filepaths)}\n"
         f"Rules loaded: {loaded_rules}\n"
         f"Rules skipped: {len(skipped)}"
     )
-
-    if not compiled_rules:
-        return False, ("No rule categories could be compiled.\n" + msg)
 
     return True, msg
 
 # The same as compileRules(), made this a function to change settings while running
 def loadConfig() -> tuple[bool, str]:
     print("Starting loadConfig()")
-    global MAX_FILE_SIZE, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_UNPACKED_SIZE, MAX_ARCHIVE_FILES
+    global MAX_FILE_SIZE, DETECTION_THRESHOLD, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_UNPACKED_SIZE, MAX_ARCHIVE_FILES
 
     try:
         config_file = Path(__file__).parent.parent/"config/engine_config.toml"
@@ -116,18 +100,21 @@ def loadConfig() -> tuple[bool, str]:
 
         # Validation
         if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise ValueError("Invalid MAX_FILE_SIZE")
+        if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise ValueError("Invalid DETECTION_THRESHOLD")
         if config["archive"]["MAX_ARCHIVE_DEPTH"] is None or config["archive"]["MAX_ARCHIVE_DEPTH"] < 0: raise ValueError("Invalid MAX_ARCHIVE_DEPTH")
         if config["archive"]["MAX_ARCHIVE_FILES"] is None or config["archive"]["MAX_ARCHIVE_FILES"] < 0: raise ValueError("Invalid MAX_ARCHIVE_FILES")
         if config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] is None or config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] < 0: raise ValueError("Invalid MAX_ARCHIVE_UNPACKED_SIZE")
 
         # Assigning
         MAX_FILE_SIZE = config["scan"]["MAX_FILE_SIZE"]
+        DETECTION_THRESHOLD = config["scan"]["DETECTION_THRESHOLD"]
         MAX_ARCHIVE_DEPTH = config["archive"]["MAX_ARCHIVE_DEPTH"]
         MAX_ARCHIVE_FILES = config["archive"]["MAX_ARCHIVE_FILES"]
         MAX_ARCHIVE_UNPACKED_SIZE = config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"]
     except Exception as e:
         warnings.warn(f"An error occured while loading config:\n{e}", Warning, 1, "Config")
         return False, f"An error occured while loading config: {e}"
+    print("Config loaded")
     return True, "Config successfully loaded"
 
 # Since we're already reading bytes, might as well use that
@@ -190,26 +177,19 @@ def _scanFile(filedata: FileData) -> ScanResult | None:
     # I'm using rules.match(data) instead of rules.match(filepath) because it breaks once a non-ASCII character appears
     try:
         # First, we check for known signatures
-        matches = compiled_rules["signatures"].match(data=filedata.data)
+        matches = compiled_rules.match(data=filedata.data) or {}
 
-        if matches:
-            matched_rules = [match.rule for match in matches]
-            return ScanResult(filedata.filepath, True, matched_rules, 100)
+        matched_rules = [match.rule for match in matches]
+        score = 0
+        for match in matches:
+            # Importance is assigned manually, so those should be prioritized
+            if match.meta.get("importance") is not None:
+                score += match.meta["importance"] + (match.meta["score"]*(max(match.meta["quality"],0)/100))
+            else:
+                score += match.meta["score"] * (max(match.meta["quality"], 0) / 100)
+            print(f"{match}, new score: {score}")
 
-        # Now, since our file doesn't match any known signatures, we'll run a heuristic analysis
-        matches = compiled_rules["heuristics"].match(data=filedata.data)
-
-        if matches:
-            score = 0
-            matched_rules = [match.rule for match in matches]
-
-            for match in matches:
-                score += rule_weights[f"{match.namespace}::{match.rule}"]
-
-            #TODO: Don't forget to remove that "score>3" and replace it with something that actually makes sense
-            return ScanResult(filedata.filepath, score>3, matched_rules, score)
-        else:
-            return ScanResult(filedata.filepath, False, [], 0)
+        return ScanResult(filedata.filepath, score>=DETECTION_THRESHOLD, matched_rules, score)
 
     except Exception as e:
         print(f"An exception occurred during a file scan: {e}")

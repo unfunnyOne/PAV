@@ -1,8 +1,7 @@
 [
   {
     "name": "yaraforge",
-    "link": "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-extended.zip",
-    "version_url": "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest",
-    "category": "signatures"
+    "link": "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-full.zip",
+    "version_url": "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
   }
 ]
