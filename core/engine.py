@@ -13,9 +13,6 @@ import yara
 # Archives
 import libarchive
 
-# Remove this later
-import re
-
 # Everything is stored in the config file! Don't forget to loadConfig()!
 # Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
 MAX_FILE_SIZE = 0
@@ -40,11 +37,6 @@ class FileData:
     def __init__(self, filepath: Path, data: bytes):
         self.filepath = filepath
         self.data = data
-
-# Remove this too, once we have an actual weights dataset
-def _extractRuleNames(rule_file: Path):
-    text = rule_file.read_text(encoding="utf-8", errors="ignore")
-    return re.findall(r"\brule\s+([a-zA-Z0-9_]+)", text)
 
 # Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
