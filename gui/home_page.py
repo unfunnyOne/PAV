@@ -41,6 +41,9 @@ class ScanWorker(QObject):
         self.shownegatives = shownegatives
 
     def run(self):
+        self.log.emit("Loading the configuration...")
+        success, message = engine.loadConfig()
+        self.log.emit(f"{message}\n")
         self.log.emit("Updating the rules...\n")
         success, message = updater.updateRules()
         self.log.emit(f"{message}\n")

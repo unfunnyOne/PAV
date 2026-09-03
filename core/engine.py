@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import tomllib
 
 os.environ["LIBARCHIVE"] = str(Path(__file__).resolve().parent.parent/"bin"/"libarchive-13.dll")
 
@@ -15,14 +16,14 @@ import libarchive
 # Remove this later
 import re
 
-# TODO: Make a config file and save settings there
+# Everything is stored in the config file! Don't forget to loadConfig()!
 # Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
-MAX_FILE_SIZE = 1000 * 1024 * 1024  # 1000 MB
+MAX_FILE_SIZE = 0
 
 # Settings for archive scanning. We don't want to unpack zip bombs, do we?
-MAX_ARCHIVE_DEPTH = 3
-MAX_ARCHIVE_FILES = 2000
-MAX_ARCHIVE_UNPACKED_SIZE = 2000 * 1024 * 1024  # 2000 MB
+MAX_ARCHIVE_DEPTH = 0
+MAX_ARCHIVE_FILES = 0
+MAX_ARCHIVE_UNPACKED_SIZE = 0
 
 # TODO: Make an actual dataset based on the ratio of detections and false positives for each rule
 # Right now I'll just fill it with 1's
@@ -47,60 +48,6 @@ class FileData:
 def _extractRuleNames(rule_file: Path):
     text = rule_file.read_text(encoding="utf-8", errors="ignore")
     return re.findall(r"\brule\s+([a-zA-Z0-9_]+)", text)
-
-# Since we're already reading bytes, might as well use that
-def _isArchive(data: bytes) -> bool:
-    return (
-        data.startswith(b"PK") or          # zip
-        data.startswith(b"Rar!\x1A") or    # rar
-        data.startswith(b"7z\xBC\xAF") or   # 7z
-        data.startswith(b"\x1F\x8B") or     # gz
-        (len(data) > 262 and data[257:262] == b"ustar")  # tar
-    )
-
-# This function is recursive(to read nested archives)
-# God, that took a long time to make
-def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> (list[FileData], int, int):
-    files = []
-
-    with libarchive.memory_reader(data) as archive:
-        for entry in archive:
-            entry_data = bytearray()
-
-            # get_blocks() is a generator, so we're gonna use it to read the file block by block
-            # so we don't load a 10GB file into the RAM before checking its size
-            for block in entry.get_blocks():
-                entry_data.extend(block)
-                if len(entry_data) > MAX_FILE_SIZE:
-                    warnings.warn(f"Skipped a file exceeding {MAX_FILE_SIZE} bytes in {prefix}", Warning, 1, f"{prefix}")
-                    break
-            else:   # if loop completed without a break
-                entry_data = bytes(entry_data)
-                total_size += len(entry_data)
-                file_count += 1
-
-                if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
-                    warnings.warn(f"Unpacked archive exceeded max size: {MAX_ARCHIVE_UNPACKED_SIZE}", Warning, 1, f"{prefix}")
-                    break
-
-                new_prefix = f"{prefix}/{entry.pathname}"
-                if _isArchive(entry_data) and depth < MAX_ARCHIVE_DEPTH:
-                    try:
-                        # If it's a nested archive, we start recursion
-                        #
-                        nested_files, total_size, file_count = _collectFromArchive(
-                            data=entry_data,
-                            total_size=total_size,
-                            file_count=file_count,
-                            depth=depth + 1,
-                            prefix=new_prefix
-                        )
-                        files.extend(nested_files)
-                    except Exception as e:
-                        print(f"Nested archive error: {e}")
-                else:
-                    files.append(FileData(Path(new_prefix), entry_data))
-    return files, total_size, file_count
 
 # Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
@@ -156,6 +103,89 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
         return False, ("No rule categories could be compiled.\n" + msg)
 
     return True, msg
+
+# The same as compileRules(), made this a function to change settings while running
+def loadConfig() -> tuple[bool, str]:
+    print("Starting loadConfig()")
+    global MAX_FILE_SIZE, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_UNPACKED_SIZE, MAX_ARCHIVE_FILES
+
+    try:
+        config_file = Path(__file__).parent.parent/"config/engine_config.toml"
+        with config_file.open("rb") as f:
+            config = tomllib.load(f)
+
+        # Validation
+        if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise Exception("Invalid MAX_FILE_SIZE")
+        if config["archive"]["MAX_ARCHIVE_DEPTH"] is None or config["archive"]["MAX_ARCHIVE_DEPTH"] < 0: raise Exception("Invalid MAX_ARCHIVE_DEPTH")
+        if config["archive"]["MAX_ARCHIVE_FILES"] is None or config["archive"]["MAX_ARCHIVE_FILES"] < 0: raise Exception("Invalid MAX_ARCHIVE_FILES")
+        if config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] is None or config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] < 0: raise Exception("Invalid MAX_ARCHIVE_UNPACKED_SIZE")
+
+        # Assigning
+        MAX_FILE_SIZE = config["scan"]["MAX_FILE_SIZE"]
+        MAX_ARCHIVE_DEPTH = config["archive"]["MAX_ARCHIVE_DEPTH"]
+        MAX_ARCHIVE_FILES = config["archive"]["MAX_ARCHIVE_FILES"]
+        MAX_ARCHIVE_UNPACKED_SIZE = config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"]
+    except Exception as e:
+        warnings.warn(f"An error occured while loading config:\n{e}", Warning, 1, "Config")
+        return False, f"An error occured while loading config: {e}"
+    return True, "Config successfully loaded"
+
+# Since we're already reading bytes, might as well use that
+def _isArchive(data: bytes) -> bool:
+    return (
+        data.startswith(b"PK") or          # zip
+        data.startswith(b"Rar!\x1A") or    # rar
+        data.startswith(b"7z\xBC\xAF") or   # 7z
+        data.startswith(b"\x1F\x8B") or     # gz
+        (len(data) > 262 and data[257:262] == b"ustar")  # tar
+    )
+
+# This function is recursive(to read nested archives)
+# God, that took a long time to make
+def _collectFromArchive(data: bytes, total_size: int = 0, file_count: int = 0, depth: int = 0, prefix: str = "") -> tuple[list[FileData], int, int]:
+    files = []
+
+    with libarchive.memory_reader(data) as archive:
+        for entry in archive:
+            entry_data = bytearray()
+
+            # get_blocks() is a generator, so we're gonna use it to read the file block by block
+            # so we don't load a 10GB file into the RAM before checking its size
+            for block in entry.get_blocks():
+                entry_data.extend(block)
+                if len(entry_data) > MAX_FILE_SIZE:
+                    warnings.warn(f"Skipped a file exceeding {MAX_FILE_SIZE} bytes in {prefix}", Warning, 1, f"{prefix}")
+                    break
+            else:   # if loop completed without a break
+                entry_data = bytes(entry_data)
+                total_size += len(entry_data)
+                file_count += 1
+
+                if total_size > MAX_ARCHIVE_UNPACKED_SIZE or file_count >= MAX_ARCHIVE_FILES:
+                    warnings.warn(f"Unpacked archive exceeded max size: {MAX_ARCHIVE_UNPACKED_SIZE}", Warning, 1, f"{prefix}")
+                    break
+
+                new_prefix = f"{prefix}/{entry.pathname}"
+                if _isArchive(entry_data):
+                    if depth < MAX_ARCHIVE_DEPTH:
+                        try:
+                            # If it's a nested archive, we start recursion
+                            #
+                            nested_files, total_size, file_count = _collectFromArchive(
+                                data=entry_data,
+                                total_size=total_size,
+                                file_count=file_count,
+                                depth=depth + 1,
+                                prefix=new_prefix
+                            )
+                            files.extend(nested_files)
+                        except Exception as e:
+                            print(f"Nested archive error: {e}")
+                    else:
+                        warnings.warn(f"Reached max recursion depth at {prefix}!", Warning, 1, f"{prefix}")
+                else:
+                    files.append(FileData(Path(new_prefix), entry_data))
+    return files, total_size, file_count
 
 def _scanFile(filedata: FileData) -> ScanResult | None:
     # I'm using rules.match(data) instead of rules.match(filepath) because it breaks once a non-ASCII character appears
@@ -214,9 +244,9 @@ def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
 
                     # Read the archive contents if it's an archive
                     if _isArchive(data):
-                        extracted,_,_ = _collectFromArchive(data=data, prefix=str(f)) #"_,_" because it also returns
-                        for filedata in extracted:                                    # total size and file count
-                            yield _scanFile(filedata), idx, total                     # for recursion purposes
+                        extracted = _collectFromArchive(data=data, prefix=str(f))[0] #"[0]" because it returns a tuple
+                        for filedata in extracted:
+                            yield _scanFile(filedata), idx, total
                     else:
                         yield _scanFile(FileData(f, data)), idx, total
             except Exception as e:
