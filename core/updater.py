@@ -3,7 +3,6 @@ import json
 
 import os
 import tempfile
-import shutil
 
 from pathlib import Path
 from datetime import datetime
@@ -135,8 +134,10 @@ def updateRules():
             print(f"An exception occured when downloading rules: {e}")
         success, rules = compileRules(temp_path/"unpacked")
         if success:
-            destination_path = Path(__file__).resolve().parent.parent / "rules"
-            rules.save(f"{destination_path}/rules.compiled")
+            destination_path = Path(__file__).resolve().parent.parent/"rules"/"rules.compiled"
+            if destination_path.exists(): os.remove(destination_path)
+
+            rules.save(f"{destination_path}")
             return True, f"Rulesets updated: {len(to_update)}"
         else:
             return False, "Failed to update the rules"
