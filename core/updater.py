@@ -1,3 +1,5 @@
+from zipfile import __main__
+
 import requests
 import json
 
@@ -77,25 +79,15 @@ def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
     filepaths = {}
     skipped = []
 
-    #Categorizing and making sure that all of our rules are actually compiling
+    # Looking for all the rules
     for rule_file in rulesdir.rglob("*.yar"):
-        try:
-            # Checking if the rule compiles before adding it to the list
-            rule = yara.compile(filepath=str(rule_file))
+        relative = rule_file.relative_to(rulesdir)
+        # This is here to prevent duplicates from overriding each other
+        namespace = str(relative).replace("\\", "_")
+        # Add it to the final list for compilation
+        filepaths[namespace] = str(rule_file)
 
-            relative = rule_file.relative_to(rulesdir)
-
-            # This is here to prevent duplicates from overriding each other
-            namespace = str(relative).replace("\\", "_")
-
-            # Rule successfully compiles, so we add it to the final list for compilation
-            filepaths[namespace] = str(rule_file)
-        except Exception as e:
-            #Saving this for debug
-            skipped.append((str(rule_file), str(e)))
-            continue
-
-    #Now we're actually compiling the rules
+    # Now we're actually compiling the rules
     try:
         compiled_rules = yara.compile(filepaths=filepaths)
     except Exception as e:
@@ -118,6 +110,9 @@ def updateRules():
                 versions[source.name] = release_data.json()["published_at"]
         except Exception as e:
             print(f"An exception happened when updating rules: {e}")
+
+    if len(to_update) == 0:
+        return True, "No rules need updating!"
 
     # Now that we know which rules should be updated, let's start downloading
     # Notice how I'm using a temp directory! I feel so smart about it lmao

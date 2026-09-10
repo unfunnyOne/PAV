@@ -62,7 +62,7 @@ def loadConfig() -> tuple[bool, str]:
 
         # Validation
         if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise ValueError("Invalid MAX_FILE_SIZE")
-        if config["scan"]["MAX_FILE_SIZE"] is None or config["scan"]["MAX_FILE_SIZE"] < 0: raise ValueError("Invalid DETECTION_THRESHOLD")
+        if config["scan"]["DETECTION_THRESHOLD"] is None or config["scan"]["DETECTION_THRESHOLD"] < 0: raise ValueError("Invalid DETECTION_THRESHOLD")
         if config["archive"]["MAX_ARCHIVE_DEPTH"] is None or config["archive"]["MAX_ARCHIVE_DEPTH"] < 0: raise ValueError("Invalid MAX_ARCHIVE_DEPTH")
         if config["archive"]["MAX_ARCHIVE_FILES"] is None or config["archive"]["MAX_ARCHIVE_FILES"] < 0: raise ValueError("Invalid MAX_ARCHIVE_FILES")
         if config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] is None or config["archive"]["MAX_ARCHIVE_UNPACKED_SIZE"] < 0: raise ValueError("Invalid MAX_ARCHIVE_UNPACKED_SIZE")
@@ -157,7 +157,7 @@ def _scanFile(filedata: FileData) -> ScanResult | None:
 
 def scanPath(scanpath: Path, recursive: bool = True) -> (ScanResult, int, int):
     if not compiled_rules:
-        raise RuntimeError("Rules are not compiled. Call compileRules() first.")
+        raise RuntimeError("Rules are not loaded. Call loadRules() first.")
 
     if scanpath.is_file():
         data = scanpath.read_bytes()
