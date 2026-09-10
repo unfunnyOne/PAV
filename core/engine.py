@@ -53,7 +53,6 @@ def loadRules(rules_path: Path = Path(__file__).resolve().parent.parent/"rules"/
 
 # The same as compileRules(), made this a function to change settings while running
 def loadConfig() -> tuple[bool, str]:
-    print("Starting loadConfig()")
     global MAX_FILE_SIZE, DETECTION_THRESHOLD, MAX_ARCHIVE_DEPTH, MAX_ARCHIVE_UNPACKED_SIZE, MAX_ARCHIVE_FILES
 
     try:
@@ -77,7 +76,6 @@ def loadConfig() -> tuple[bool, str]:
     except Exception as e:
         warnings.warn(f"An error occured while loading config:\n{e}", Warning, 1, "Config")
         return False, f"An error occured while loading config: {e}"
-    print("Config loaded")
     return True, "Config successfully loaded"
 
 # Since we're already reading bytes, might as well use that
@@ -150,7 +148,6 @@ def _scanFile(filedata: FileData) -> ScanResult | None:
             if match.meta.get("importance") is not None:
                 important = True
             score += match.meta["score"] * (max(match.meta["quality"], 0) / 100)
-            print(f"{match}, new score: {score}")
 
         return ScanResult(filedata.filepath, important or score>=DETECTION_THRESHOLD, matched_rules, score, filedata.info)
 
