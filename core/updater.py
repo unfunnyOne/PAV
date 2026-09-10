@@ -1,5 +1,3 @@
-from zipfile import __main__
-
 import requests
 import json
 
@@ -77,7 +75,6 @@ def _unpackRules(archive_path: Path, destination: Path):
 # This used to be a part of engine.py, but I decided that recompiling all the rules at the start of each scan is wasteful
 def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
     filepaths = {}
-    skipped = []
 
     # Looking for all the rules
     for rule_file in rulesdir.rglob("*.yar"):
@@ -112,7 +109,7 @@ def updateRules():
             print(f"An exception happened when updating rules: {e}")
 
     if len(to_update) == 0:
-        return True, "No rules need updating!"
+        return True, "Rules are already up to date"
 
     # Now that we know which rules should be updated, let's start downloading
     # Notice how I'm using a temp directory! I feel so smart about it lmao
@@ -130,8 +127,6 @@ def updateRules():
         success, rules = compileRules(temp_path/"unpacked")
         if success:
             destination_path = Path(__file__).resolve().parent.parent/"rules"/"rules.compiled"
-            if destination_path.exists(): os.remove(destination_path)
-
             rules.save(f"{destination_path}")
             return True, f"Rulesets updated: {len(to_update)}"
         else:
