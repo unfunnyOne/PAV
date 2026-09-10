@@ -40,47 +40,16 @@ class FileData:
         self.data = data
         self.info = info
 
-# Made this a separate function to be able to recompile the rules whenever we need to(after auto updating, for example)
-def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
+def loadRules(rules_path: Path = Path(__file__).resolve().parent.parent/"rules"/"rules.compiled"):
     global compiled_rules
-
-    compiled_rules.clear()
-
-    filepaths = {}
-    skipped = []
-
-    #Categorizing and making sure that all of our rules are actually compiling
-    for rule_file in rulesdir.rglob("*.yar"):
-        try:
-            # Checking if the rule compiles before adding it to the list
-            rule = yara.compile(filepath=str(rule_file))
-
-            relative = rule_file.relative_to(rulesdir)
-
-            # This is here to prevent duplicates from overriding each other
-            namespace = str(relative).replace("\\", "_")
-
-            # Rule successfully compiles, so we add it to the final list for compilation
-            filepaths[namespace] = str(rule_file)
-        except Exception as e:
-            #Saving this for debug
-            skipped.append((str(rule_file), str(e)))
-            continue
-
-    #Now we're actually compiling the rules
     try:
-        compiled_rules = yara.compile(filepaths=filepaths)
+        compiled_rules = yara.load(str(rules_path))
     except Exception as e:
-        return False, f"Couldn't compile the rules: {e}"
-
-    loaded_rules = len(filepaths)
-    msg = (
-        f"Rules compiled successfully.\n"
-        f"Rules loaded: {loaded_rules}\n"
-        f"Rules skipped: {len(skipped)}"
-    )
-
-    return True, msg
+        return False, f"An exception occured when loading the rules : {e}"
+    if compiled_rules:
+        return True, "Successfully loaded the rules"
+    else:
+        return False, "Failed to load the rules"
 
 # The same as compileRules(), made this a function to change settings while running
 def loadConfig() -> tuple[bool, str]:

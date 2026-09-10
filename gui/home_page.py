@@ -47,9 +47,8 @@ class ScanWorker(QObject):
         self.log.emit("Updating the rules...\n")
         success, message = updater.updateRules()
         self.log.emit(f"{message}\n")
-        self.log.emit("Compiling the rules...\n")
-
-        success, message = engine.compileRules()
+        self.log.emit("Loading the rules...\n")
+        success, message = engine.loadRules()
         self.log.emit(f"{message}\n")
 
         if not success:

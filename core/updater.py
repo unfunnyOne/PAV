@@ -11,6 +11,8 @@ from datetime import datetime
 os.environ["LIBARCHIVE"] = str(Path(__file__).resolve().parent.parent/"bin"/"libarchive-13.dll")
 import libarchive
 
+import yara
+
 class Source:
     def __init__(self, name: str, link: str, version_url: str):
         self.name = name
@@ -70,6 +72,38 @@ def _unpackRules(archive_path: Path, destination: Path):
                 for block in entry.get_blocks():
                     f.write(block)
 
+# Made this a separate function to be able to recompile the rules whenever we need to
+# This used to be a part of engine.py, but I decided that recompiling all the rules at the start of each scan is wasteful
+def compileRules(rulesdir: Path = Path(__file__).parent.parent / "rules"):
+    filepaths = {}
+    skipped = []
+
+    #Categorizing and making sure that all of our rules are actually compiling
+    for rule_file in rulesdir.rglob("*.yar"):
+        try:
+            # Checking if the rule compiles before adding it to the list
+            rule = yara.compile(filepath=str(rule_file))
+
+            relative = rule_file.relative_to(rulesdir)
+
+            # This is here to prevent duplicates from overriding each other
+            namespace = str(relative).replace("\\", "_")
+
+            # Rule successfully compiles, so we add it to the final list for compilation
+            filepaths[namespace] = str(rule_file)
+        except Exception as e:
+            #Saving this for debug
+            skipped.append((str(rule_file), str(e)))
+            continue
+
+    #Now we're actually compiling the rules
+    try:
+        compiled_rules = yara.compile(filepaths=filepaths)
+    except Exception as e:
+        return False, f"Couldn't compile the rules: {e}"
+
+    return True, compiled_rules
+
 def updateRules():
     # First, we gotta determine which rules need updating. Load sources and versions
     sources = _loadSources()
@@ -93,17 +127,16 @@ def updateRules():
         try:
             for source in to_update:
                 archive_path = _downloadRules(source.link, temp_path/f"rules_{source.name}.zip")
+                _unpackRules(archive_path, temp_path/"unpacked")
 
-                destination_path = Path(__file__).resolve().parent.parent / "rules" / source.name
-
-                # Delete the old directory
-                if destination_path.exists():
-                    shutil.rmtree(destination_path)
-
-                _unpackRules(archive_path, destination_path)
                 # Now, one last thing: update the versions
                 _saveVersions(versions)
         except Exception as e:
             print(f"An exception occured when downloading rules: {e}")
-
-    return True, f"Rules updated: {len(to_update)}"
+        success, rules = compileRules(temp_path/"unpacked")
+        if success:
+            destination_path = Path(__file__).resolve().parent.parent / "rules"
+            rules.save(f"{destination_path}/rules.compiled")
+            return True, f"Rulesets updated: {len(to_update)}"
+        else:
+            return False, "Failed to update the rules"
