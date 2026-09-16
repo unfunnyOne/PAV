@@ -87,10 +87,7 @@ def _getKey(path: Path = Path(__file__).resolve().parent.parent/"config/qkey.dat
         warn(f"Failed to get a key: {e}")
         return False, None
 
-def _addMetadata(data: dict, file_id: str, metadir: Path = Path(__file__).resolve().parent.parent/"quarantine/meta") -> bool:
-    success, key = _getKey()
-    if not success: return False
-
+def _addMetadata(data: dict, file_id: str, key: bytes, metadir: Path = Path(__file__).resolve().parent.parent/"quarantine/meta") -> bool:
     plaintext = json.dumps(data).encode("utf-8")
 
     nonce = get_random_bytes(12)
@@ -101,16 +98,13 @@ def _addMetadata(data: dict, file_id: str, metadir: Path = Path(__file__).resolv
         f.write(nonce+tag+ciphertext)
         return True
 
-def _getMetadata(file_id: str, metadir: Path = Path(__file__).resolve().parent.parent/"quarantine/meta") -> dict | None:
+def _getMetadata(file_id: str, key: bytes, metadir: Path = Path(__file__).resolve().parent.parent/"quarantine/meta") -> dict | None:
     try:
         with open(metadir/f"{file_id}.meta", "rb") as f:
             data = f.read()
     except Exception as e:
         warn(f"Failed to load the meta file: {e}")
         return None
-
-    success, key = _getKey()
-    if not success: return None
 
     nonce = data[:12]
     tag = data[12:28]
