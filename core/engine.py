@@ -14,11 +14,11 @@ import yara
 import libarchive
 
 # Everything is stored in the config file! Don't forget to loadConfig()!
-# Settings for regular scanning. Don't wanna load the entire C: partition into the RAM, right?
+# Settings for regular scanning. Don't wanna load 50GB files into the RAM, right?
 MAX_FILE_SIZE = 0
 DETECTION_THRESHOLD = 0
 
-# Settings for archive scanning. We don't want to unpack zip bombs, do we?
+# Settings for archive scanning. To prevent the program from unpacking zip bombs
 MAX_ARCHIVE_DEPTH = 0
 MAX_ARCHIVE_FILES = 0
 MAX_ARCHIVE_UNPACKED_SIZE = 0

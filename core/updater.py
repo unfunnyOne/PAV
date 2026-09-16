@@ -24,14 +24,7 @@ VERSIONS_FILE = Path(__file__).parent.parent / "config/rule_versions.json"
 def _loadSources():
     with SOURCES_FILE.open("r", encoding="utf-8") as f:
         data = json.load(f)
-        return [
-            Source(
-                name=source["name"],
-                link=source["link"],
-                version_url=source["version_url"]
-            )
-            for source in data
-        ]
+        return [Source(name=source["name"], link=source["link"], version_url=source["version_url"]) for source in data]
 
 def _loadVersions() -> dict[str, str]:
     if not VERSIONS_FILE.exists() or VERSIONS_FILE.stat().st_size == 0:
